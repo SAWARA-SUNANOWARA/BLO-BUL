@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ブラバレ逃避行</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 24px 12px;
+    background: #17131f;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    color: #f0ecec;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  .stats {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    max-width: 420px;
+    font-size: 14px;
+    color: #cfc9c9;
+  }
+  .stats strong { color: #fff; font-weight: 600; }
+  button {
+    background: rgba(255,255,255,0.06);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(255,255,255,0.14); }
+  button:active { transform: scale(0.97); }
+  #fsBtn { width: 36px; height: 36px; padding: 0; font-size: 16px; }
+  .gameArea { position: relative; width: 100%; max-width: 420px; }
+  canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: #2b2140;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(0,0,0,0.55);
+    border-radius: 12px;
+    text-align: center;
+    padding: 16px;
+  }
+  #overlay p { margin: 0; font-size: 16px; font-weight: 500; }
+  .controls { display: flex; gap: 16px; }
+  .controls button { width: 64px; height: 44px; font-size: 18px; }
+  #fsMsg { font-size: 12px; color: #a89f9f; margin: 0; display: none; text-align: center; }
+  footer { font-size: 11px; color: #74706f; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="gameWrapper" style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+  <h1>ブラバレ逃避行</h1>
+  <div class="stats">
+    <span>逃走時間: <strong id="timer">0.0s</strong></span>
+    <span>ベスト: <strong id="best">0.0s</strong></span>
+    <button id="fsBtn" aria-label="全画面表示">&#x26F6;</button>
+  </div>
+  <div class="gameArea">
+    <canvas id="game" width="420" height="560"></canvas>
+    <div id="overlay">
+      <p>矢印キー / A・D / 左右ボタンで車線変更<br>後ろから撃ってくる弾を避けよう</p>
+      <button id="startBtn">スタート</button>
+    </div>
+  </div>
+  <div class="controls">
+    <button id="leftBtn" aria-label="左へ">&#8592;</button>
+    <button id="rightBtn" aria-label="右へ">&#8594;</button>
+  </div>
+  <p id="fsMsg">この環境では全画面表示に対応していません。ブラウザの表示倍率を調整してみてください。</p>
+  <footer>ブラバレ逃避行</footer>
+</div>
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const laneCount = 4;
+  const roadMargin = 34;
+  const roadW = W - roadMargin*2;
+  const laneW = roadW / laneCount;
+  const timerEl = document.getElementById('timer');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+  const leftBtn = document.getElementById('leftBtn');
+  const rightBtn = document.getElementById('rightBtn');
+  const fsBtn = document.getElementById('fsBtn');
+  const fsMsg = document.getElementById('fsMsg');
+  const wrapper = document.getElementById('gameWrapper');
+
+  fsBtn.onclick = () => {
+    try{
+      if(!document.fullscreenElement){
+        (wrapper.requestFullscreen ? wrapper.requestFullscreen() : Promise.reject()).catch(()=>{ fsMsg.style.display='block'; });
+      } else {
+        document.exitFullscreen();
+      }
+    }catch(e){ fsMsg.style.display='block'; }
+  };
+  document.addEventListener('fullscreenchange', () => {
+    if(document.fullscreenElement === wrapper){
+      canvas.style.height = '80vh';
+      canvas.style.width = 'auto';
+      wrapper.style.justifyContent = 'center';
+      wrapper.style.height = '100vh';
+    } else {
+      canvas.style.height = 'auto';
+      canvas.style.width = '100%';
+      wrapper.style.height = 'auto';
+    }
+  });
+
+  let best = 0;
+  let running = false;
+  let playerLane = 1;
+  let playerX = roadMargin + laneW*playerLane + laneW/2;
+  const playerY = H*0.4;
+  const carW = 40, carH = 72;
+  const copW = 32, copH = 54;
+  let cops = [];
+  let bullets = [];
+  let dashOffset = 0;
+  let elapsed = 0;
+  let lastTime = 0;
+  let spawnTimer = 0;
+  let baseSpeed = 200;
+  let scenery = [];
+  let sparkleT = 0;
+
+  function lerp(a,b,t){ return a+(b-a)*Math.min(1,Math.max(0,t)); }
+
+  function resetGame(){
+    playerLane = 1;
+    playerX = roadMargin + laneW*playerLane + laneW/2;
+    cops = [];
+    bullets = [];
+    elapsed = 0;
+    spawnTimer = 0;
+    baseSpeed = 200;
+    dashOffset = 0;
+    scenery = [
+      {type:'cactus', x: roadMargin*0.4, y: -50},
+      {type:'cactus', x: W - roadMargin*0.4, y: -300},
+      {type:'billboard', x: roadMargin*0.35, y: -700}
+    ];
+  }
+
+  function spawnCop(){
+    const activeLanes = cops.map(c=>c.lane);
+    const freeLanes = [];
+    for(let i=0;i<laneCount;i++) if(!activeLanes.includes(i)) freeLanes.push(i);
+    if(freeLanes.length===0 || cops.length>=4) return;
+    const lane = freeLanes[Math.floor(Math.random()*freeLanes.length)];
+    cops.push({
+      lane,
+      x: roadMargin + laneW*lane + laneW/2,
+      y: H + copH,
+      startDist: 260 + Math.random()*40,
+      minDist: 140 + Math.random()*40,
+      oscPhase: Math.random()*Math.PI*2,
+      oscSpeed: 1.1 + Math.random()*0.6,
+      oscAmp: 22 + Math.random()*16,
+      shootCd: 1.4+Math.random()*1.0,
+      muzzleT: 0
+    });
+  }
+
+  function drawDuskSky(){
+    const g = ctx.createLinearGradient(0,0,0,H*0.4);
+    g.addColorStop(0,'#4a2f6b');
+    g.addColorStop(0.5,'#c9527e');
+    g.addColorStop(1,'#f0997b');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H*0.4);
+    ctx.fillStyle = '#f5c775';
+    ctx.beginPath();
+    ctx.arc(W*0.75,H*0.22,26,0,Math.PI*2);
+    ctx.fill();
+    const g2 = ctx.createLinearGradient(0,H*0.35,0,H);
+    g2.addColorStop(0,'#7a4a3d');
+    g2.addColorStop(1,'#3a2418');
+    ctx.fillStyle = g2;
+    ctx.fillRect(0,H*0.35,W,H*0.65);
+    ctx.fillStyle = '#c99a5c';
+    ctx.fillRect(0,H*0.35,roadMargin,H*0.65);
+    ctx.fillRect(W-roadMargin,H*0.35,roadMargin,H*0.65);
+  }
+
+  function drawCactus(x,y,scale){
+    ctx.fillStyle = '#2f2a1d';
+    ctx.fillRect(x-4*scale,y,8*scale,26*scale);
+    ctx.fillRect(x-14*scale,y+6*scale,10*scale,7*scale);
+    ctx.fillRect(x-14*scale,y-2*scale,7*scale,14*scale);
+    ctx.fillRect(x+4*scale,y+10*scale,10*scale,7*scale);
+    ctx.fillRect(x+7*scale,y-2*scale,7*scale,16*scale);
+  }
+
+  function drawBillboard(x,y){
+    ctx.save();
+    ctx.fillStyle = '#4a4238';
+    ctx.fillRect(x-2,y,4,50);
+    ctx.fillStyle = '#e6f1fb';
+    ctx.fillRect(x-38,y-46,76,46);
+    ctx.strokeStyle = '#185fa5';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x-38,y-46,76,46);
+    ctx.fillStyle = '#185fa5';
+    ctx.font = '600 13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ROUTE 66', x, y-22);
+    ctx.font = '11px sans-serif';
+    ctx.fillText('DINER', x, y-8);
+    ctx.restore();
+  }
+
+  function drawRoad(dt){
+    ctx.fillStyle = '#4a4238';
+    ctx.fillRect(roadMargin,H*0.35,roadW,H*0.65);
+    for(let l=1;l<laneCount;l++){
+      const x = roadMargin + laneW*l;
+      dashOffset = (dashOffset + baseSpeed*dt) % 40;
+      ctx.strokeStyle = '#e8dfc0';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([18,18]);
+      ctx.lineDashOffset = -dashOffset;
+      ctx.beginPath();
+      ctx.moveTo(x,H*0.35); ctx.lineTo(x,H);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.strokeStyle = '#e8dfc0'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(roadMargin,H*0.35); ctx.lineTo(roadMargin,H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W-roadMargin,H*0.35); ctx.lineTo(W-roadMargin,H); ctx.stroke();
+  }
+
+  function drawHead(x,y,skin,ribbon,r){
+    ctx.fillStyle = skin;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = ribbon;
+    ctx.beginPath();
+    ctx.moveTo(x-r*0.9,y-r*0.9);
+    ctx.lineTo(x,y-r*1.6);
+    ctx.lineTo(x+r*0.9,y-r*0.9);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawTeddy(x,y,r){
+    const colors=['#e24b4a','#ef9f27','#faec6a','#639922','#378add','#7f77dd'];
+    for(let i=0;i<colors.length;i++){
+      ctx.strokeStyle = colors[i];
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(x,y,r-2, (i/colors.length)*Math.PI*2, ((i+1)/colors.length)*Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#f5e6d3';
+    ctx.beginPath(); ctx.arc(x,y,r*0.7,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#f5e6d3';
+    ctx.beginPath(); ctx.arc(x-r*0.65,y-r*0.55,r*0.3,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+r*0.65,y-r*0.55,r*0.3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#4a3020';
+    ctx.beginPath(); ctx.arc(x-r*0.22,y-r*0.05,r*0.08,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+r*0.22,y-r*0.05,r*0.08,0,Math.PI*2); ctx.fill();
+  }
+
+  function drawPlayerCar(x,y){
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(-carW/2+3,-carH/2+6,carW,carH);
+    ctx.fillStyle = '#d85a30';
+    ctx.beginPath();
+    ctx.moveTo(-carW/2, -carH/2+12);
+    ctx.quadraticCurveTo(-carW/2,-carH/2,-carW/2+9,-carH/2);
+    ctx.lineTo(carW/2-9,-carH/2);
+    ctx.quadraticCurveTo(carW/2,-carH/2,carW/2,-carH/2+12);
+    ctx.lineTo(carW/2,carH/2-8);
+    ctx.quadraticCurveTo(carW/2,carH/2,carW/2-8,carH/2);
+    ctx.lineTo(-carW/2+8,carH/2);
+    ctx.quadraticCurveTo(-carW/2,carH/2,-carW/2,carH/2-8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#993c1d';
+    ctx.fillRect(-carW/2+3,-carH/2+14,carW-6,carH-24);
+    drawHead(-carW*0.24,-carH*0.14,'#f7d9c4','#ff2d95',7);
+    drawHead(carW*0.24,-carH*0.14,'#f7d9c4','#378add',7);
+    drawTeddy(0,carH*0.16,10);
+    ctx.fillStyle = '#712b13';
+    ctx.fillRect(-carW/2+4,carH/2-14,carW-8,8);
+    ctx.restore();
+  }
+
+  function drawCopCar(x,y,flash,gunFlash){
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fillRect(-copW/2+3,-copH/2+6,copW,copH);
+    ctx.fillStyle = '#f0997b';
+    ctx.beginPath();
+    ctx.moveTo(-copW/2, -copH/2+10);
+    ctx.quadraticCurveTo(-copW/2,-copH/2,-copW/2+8,-copH/2);
+    ctx.lineTo(copW/2-8,-copH/2);
+    ctx.quadraticCurveTo(copW/2,-copH/2,copW/2,-copH/2+10);
+    ctx.lineTo(copW/2,copH/2-8);
+    ctx.quadraticCurveTo(copW/2,copH/2,copW/2-8,copH/2);
+    ctx.lineTo(-copW/2+8,copH/2);
+    ctx.quadraticCurveTo(-copW/2,copH/2,-copW/2,copH/2-8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#fbeaf0';
+    ctx.fillRect(-copW/2+4,-copH/2+7,copW-8,13);
+    drawHead(0,-copH*0.12,'#fbe4d6','#ed93b1',6);
+    ctx.fillStyle = flash ? '#e24b4a' : '#378add';
+    ctx.fillRect(-copW/2+4,-1,copW-8,4);
+    ctx.fillStyle = '#f4c0d1';
+    ctx.fillRect(-3,-copH/2-10,6,10);
+    if(gunFlash){
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      for(let i=0;i<5;i++){
+        const ang = i*(Math.PI*2/5) - Math.PI/2;
+        ctx.lineTo(Math.cos(ang)*7,-copH/2-14+Math.sin(ang)*7);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawBullet(x,y,t){
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.fillStyle = '#ed93b1';
+    ctx.beginPath(); ctx.arc(0,0,5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(-1.5,-1.5,1.6,0,Math.PI*2); ctx.fill();
+    if(Math.floor(t*10)%2===0){
+      ctx.strokeStyle = '#fbeaf0';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(-9,0); ctx.lineTo(9,0);
+      ctx.moveTo(0,-9); ctx.lineTo(0,9);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function shootCdRange(t){
+    const rampT = Math.max(0, t-20);
+    const p = Math.min(1, rampT/280);
+    return [lerp(1.4,0.14,p), lerp(2.4,0.32,p)];
+  }
+
+  function update(dt){
+    elapsed += dt;
+    sparkleT += dt;
+    baseSpeed = 200 + elapsed*6;
+    spawnTimer -= dt;
+    const spawnInterval = Math.max(0.5, 1.3 - elapsed*0.02);
+    if(spawnTimer <= 0){
+      spawnCop();
+      spawnTimer = spawnInterval;
+    }
+    for(const s of scenery){
+      s.y += baseSpeed*dt*0.9;
+      if(s.y > H+120){
+        s.y = -Math.random()*400-100;
+        if(s.type==='billboard'){ s.x = Math.random()<0.5 ? roadMargin*0.35 : W-roadMargin*0.35; }
+        else { s.x = Math.random()<0.5 ? roadMargin*0.4 : W-roadMargin*0.4; }
+      }
+    }
+    const [cdMin,cdMax] = shootCdRange(elapsed);
+    const approachP = Math.min(1, elapsed/300);
+    for(const c of cops){
+      const dist = lerp(c.startDist, c.minDist, approachP);
+      const targetY = playerY + dist + Math.sin(elapsed*c.oscSpeed + c.oscPhase)*c.oscAmp;
+      c.y += (targetY - c.y) * Math.min(1, dt*2.6);
+      c.shootCd -= dt;
+      c.muzzleT -= dt;
+      if(c.shootCd<=0){
+        bullets.push({x:c.x,y:c.y-copH/2,lane:c.lane});
+        c.shootCd = lerp(cdMin,cdMax,Math.random());
+        c.muzzleT = 0.12;
+      }
+    }
+    const bulletSpeed = 300 + elapsed*1.4;
+    for(const b of bullets){ b.y -= bulletSpeed*dt; }
+    bullets = bullets.filter(b => b.y > -20);
+    const targetX = roadMargin + laneW*playerLane + laneW/2;
+    playerX += (targetX-playerX)*Math.min(1,dt*12);
+    for(const c of cops){
+      if(Math.abs(c.x-playerX) < (carW+copW)/2*0.7 && Math.abs(c.y-playerY) < (carH+copH)/2*0.65){
+        endGame(); return;
+      }
+    }
+    for(const b of bullets){
+      if(Math.abs(b.x-playerX) < carW*0.4 && Math.abs(b.y-playerY) < carH*0.45){
+        endGame(); return;
+      }
+    }
+  }
+
+  function draw(){
+    drawDuskSky();
+    drawRoad(1/60);
+    for(const s of scenery){
+      if(s.type==='cactus') drawCactus(s.x,s.y,0.9);
+      else drawBillboard(s.x,s.y);
+    }
+    const flash = Math.floor(elapsed*6)%2===0;
+    for(const c of cops){
+      drawCopCar(c.x,c.y,flash,c.muzzleT>0);
+    }
+    for(const b of bullets){ drawBullet(b.x,b.y,sparkleT); }
+    drawPlayerCar(playerX,playerY);
+  }
+
+  let raf;
+  function loop(ts){
+    if(!running) return;
+    if(!lastTime) lastTime = ts;
+    const dt = Math.min(0.05,(ts-lastTime)/1000);
+    lastTime = ts;
+    update(dt);
+    draw();
+    timerEl.textContent = elapsed.toFixed(1)+'s';
+    raf = requestAnimationFrame(loop);
+  }
+
+  function endGame(){
+    running = false;
+    cancelAnimationFrame(raf);
+    if(elapsed>best){ best = elapsed; bestEl.textContent = best.toFixed(1)+'s'; }
+    overlay.style.display = 'flex';
+    overlay.innerHTML = '';
+    const p = document.createElement('p');
+    p.textContent = '御用だ。逃走時間 ' + elapsed.toFixed(1) + '秒';
+    const btn = document.createElement('button');
+    btn.textContent = 'もう一度';
+    btn.onclick = startGame;
+    overlay.appendChild(p);
+    overlay.appendChild(btn);
+  }
+
+  function startGame(){
+    resetGame();
+    overlay.style.display = 'none';
+    running = true;
+    lastTime = 0;
+    raf = requestAnimationFrame(loop);
+  }
+
+  startBtn.onclick = startGame;
+  leftBtn.onclick = () => { if(running) playerLane = Math.max(0,playerLane-1); };
+  rightBtn.onclick = () => { if(running) playerLane = Math.min(laneCount-1,playerLane+1); };
+  window.addEventListener('keydown', (e) => {
+    if(!running) return;
+    if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A') playerLane = Math.max(0,playerLane-1);
+    if(e.key==='ArrowRight'||e.key==='d'||e.key==='D') playerLane = Math.min(laneCount-1,playerLane+1);
+  });
+
+  resetGame();
+  draw();
+})();
+</script>
+</body>
+</html>
